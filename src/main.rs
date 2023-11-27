@@ -9,8 +9,8 @@ use teloxide_core::{
     requests::{Requester, RequesterExt},
 };
 
-mod error;
 mod driver;
+mod error;
 
 #[tokio::main]
 async fn main() -> Result<(), PrinterBotError> {
@@ -153,10 +153,6 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     img.pixels_mut()
         .for_each(|x| x.0 = [(255.0 * (x.0[0] as f32 / 255.0).powf(1.0 / gamma_correction)) as u8]);
-
-    // save
-
-    img.save("/tmp/out.png")?;
 
     use exoquant::*;
 
