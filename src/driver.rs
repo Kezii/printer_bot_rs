@@ -184,7 +184,7 @@ impl PrinterCommander {
     }
 
     // pag 20
-    pub fn set_print_inforomation(
+    pub fn set_print_information(
         &mut self,
         status: PrinterStatus,
         line_count: u32,

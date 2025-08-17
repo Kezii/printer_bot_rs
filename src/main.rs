@@ -85,7 +85,7 @@ async fn extract_photo_from_message(
 
     if let Some(document) = message.document() {
         // if document.mime_type == Some("image/jpeg".to_string()) {
-        //     return 
+        //     return
         // } else {
         //     bot.send_message(
         //         message.chat.id,
@@ -131,7 +131,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     // Limit stickers ratio (so people don't print incredibly long stickers)
 
-    let ratio = img.height() as f32 / img.width() as f32 ;
+    let ratio = img.height() as f32 / img.width() as f32;
 
     if ratio > 1.5 {
         println!("Ratio is too high: {}", ratio);
@@ -222,7 +222,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     printer.set_raster_mode()?;
 
-    printer.set_print_inforomation(status, lines.len() as u32)?;
+    printer.set_print_information(status, lines.len() as u32)?;
 
     //printer.set_margin_amount(35)?;
 
