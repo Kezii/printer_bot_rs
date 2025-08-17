@@ -1,4 +1,5 @@
 use std::env;
+use std::os::linux::raw::stat;
 
 use error::PrinterBotError;
 use log::*;
@@ -8,6 +9,8 @@ use teloxide_core::{
     payloads::GetUpdatesSetters,
     requests::{Requester, RequesterExt},
 };
+
+use crate::driver::{PrinterCommand, PrinterCommandMode};
 
 mod driver;
 mod error;
@@ -211,28 +214,31 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     let mut printer = driver::PrinterCommander::main("/dev/usb/lp0")?;
 
-    printer.reset()?;
-    printer.initilize()?;
+    printer.send_command(PrinterCommand::Reset)?;
+    printer.send_command(PrinterCommand::Initialize)?;
 
     // information
-    printer.get_status()?;
+    printer.send_command(PrinterCommand::StatusInfoRequest)?;
 
     let status = printer.read_status()?;
     trace!("{:#?}", status);
 
-    printer.set_raster_mode()?;
+    printer.send_command(PrinterCommand::SetCommandMode(PrinterCommandMode::Raster))?;
 
-    printer.set_print_information(status, lines.len() as u32)?;
+    printer.send_command(PrinterCommand::SetPrintInformation(
+        status,
+        lines.len() as i32,
+    ))?;
 
     //printer.set_margin_amount(35)?;
 
     debug!("printing {} lines", lines.len());
 
     for line in lines {
-        printer.raster_line(&line)?;
+        printer.send_command(PrinterCommand::RasterGraphicsTransfer(line))?;
     }
 
-    printer.print_last_page()?;
+    printer.send_command(PrinterCommand::PrintWithFeeding)?;
 
     trace!("{:#?}", printer.read_status()?);
     trace!("{:#?}", printer.read_status()?);

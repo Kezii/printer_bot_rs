@@ -87,7 +87,7 @@ impl ErrorInformation2 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum MediaType {
     NoMedia = 0x00,
     Continuous = 0x0A,
@@ -118,6 +118,127 @@ pub struct PrinterStatus {
     status_type: StatusType,
     phase_state: PhaseState,
 }
+
+#[derive(Clone)]
+pub enum PrinterCommandMode {
+    /// ESC/P mode (normal)
+    EscpNormal = 0x00, // WARNING: THE PDF DOCUMENTATION IS BROKEN AND DOES NOT HAVE THIS VALUES
+    /// Raster mode (default)
+    Raster = 0x01,
+    /// ESC/P mode (text) for QL-650TD
+    EscpText = 0x02,
+    /// P-touch Template mode for QL-580N/1050/1060N
+    PtouchTemplate = 0x03,
+}
+
+pub struct PrinterMode {
+    /// Auto cut (QL550/560/570/580N/650TD/700/1050/1060N)
+    auto_cut: bool,
+}
+
+pub struct PrinterExpandedMode {
+    /// Cut at end (Earlier version of QL-650TD firmware is not supported.)
+    cut_at_end: bool,
+    /// High resolution printing (QL-570/580N/700)
+    high_resolution_printing: bool,
+}
+
+pub enum PrinterCommand {
+    /// Reset
+    Reset,
+    /// Invalid command
+    Invalid,
+    /// Initialize
+    Initialize,
+    /// Status info request
+    StatusInfoRequest,
+    /// Command mode switch (QL-580N/650TD/1050/1060N)
+    SetCommandMode(PrinterCommandMode),
+    /// Print information command
+    SetPrintInformation(PrinterStatus, i32),
+    /// Set each mode
+    SetMode(PrinterMode),
+    /// Specify the page number in ”cut every * labels” (QL-560/570/580N/700/1050/1060N)
+    /// When “auto cut” is specified, you can specify page number (1-255) in “cut each *labels”.
+    /// Page number = n1 (1- 255)
+    /// Default is 1 (cut each label)
+    SetPageNumber(u8),
+    /// Set expanded mode (QL-560/570/580N/650TD/700/1050/1060N)
+    SetExpandedMode(PrinterExpandedMode),
+    /// Set margin amount (feed amount)
+    SetMarginAmount(u16),
+    /// Compression mode selection (QL-570/580N/650TD/1050/1060N
+    SetCompressionMode, // todo
+    /// Raster graphics transfer
+    RasterGraphicsTransfer([u8; 90]), // todo: ql-1050/1060n takes 162 bytes
+    /// Zero raster graphics
+    ZeroRasterGraphics,
+    /// Print command
+    Print,
+    /// Print command with feeding
+    PrintWithFeeding,
+    /// Baud rate setting (QL-580N/650TD/1050/1060N)
+    SetBaudRate(u16),
+}
+
+impl PrinterCommand {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            PrinterCommand::Reset => vec![0x00; 200],
+            PrinterCommand::Invalid => vec![0x00],
+            PrinterCommand::Initialize => vec![0x1b, 0x40],
+            PrinterCommand::StatusInfoRequest => vec![0x1b, 0x69, 0x53],
+            PrinterCommand::SetCommandMode(mode) => vec![0x1b, 0x69, 0x61, mode.clone() as u8],
+            PrinterCommand::SetPrintInformation(status, line_count) => {
+                let flags = 0x02 | 0x04 | 0x08 | 0x40 | 0x80;
+                let mut command = vec![
+                    0x1b,
+                    0x69,
+                    0x7a,
+                    flags,
+                    status.media_type as u8,
+                    status.media_width,
+                    status.media_length,
+                    0,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                ];
+                command[7..11].copy_from_slice(&line_count.to_le_bytes());
+                command
+            }
+            PrinterCommand::SetMode(mode) => vec![0x1b, 0x69, 0x4d, (mode.auto_cut as u8) << 6],
+            PrinterCommand::SetPageNumber(page_number) => vec![0x1b, 0x69, 0x41, *page_number],
+            PrinterCommand::SetExpandedMode(mode) => vec![
+                0x1b,
+                0x69,
+                0x4B,
+                (mode.cut_at_end as u8) << 4 | (mode.high_resolution_printing as u8) << 6,
+            ],
+            // todo: check endianess
+            PrinterCommand::SetMarginAmount(margin) => {
+                let mut command = vec![0x1b, 0x69, 0x64, 0, 0];
+                command[3..5].copy_from_slice(&margin.to_le_bytes());
+                command
+            }
+            PrinterCommand::SetCompressionMode => vec![0x4d, 0x00],
+            PrinterCommand::RasterGraphicsTransfer(data) => {
+                let mut command = vec![0x67, 0x00, 90];
+                command.extend_from_slice(data);
+                command
+            }
+            PrinterCommand::ZeroRasterGraphics => vec![0x5A],
+            PrinterCommand::Print => vec![0x0c],
+            PrinterCommand::PrintWithFeeding => vec![0x1A],
+            PrinterCommand::SetBaudRate(baud_rate) => {
+                vec![0x1b, 0x69, 0x42, *baud_rate as u8, (baud_rate >> 8) as u8]
+            }
+        }
+    }
+}
+
 pub struct PrinterCommander {
     printer: Printer,
 }
@@ -129,20 +250,8 @@ impl PrinterCommander {
         Ok(Self { printer: lp })
     }
 
-    pub fn reset(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x00; 200])
-    }
-
-    pub fn initilize(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x1b, 0x40])
-    }
-
-    pub fn get_status(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x1b, 0x69, 0x53])
-    }
-
-    pub fn set_raster_mode(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x1b, 0x69, 0x61, 0x01])
+    pub fn send_command(&mut self, command: PrinterCommand) -> Result<(), std::io::Error> {
+        self.printer.write(&command.to_bytes())
     }
 
     pub fn read_status(&mut self) -> Result<PrinterStatus, std::io::Error> {
@@ -181,60 +290,5 @@ impl PrinterCommander {
             status_type,
             phase_state,
         })
-    }
-
-    // pag 20
-    pub fn set_print_information(
-        &mut self,
-        status: PrinterStatus,
-        line_count: u32,
-    ) -> Result<(), std::io::Error> {
-        const FLAGS: u8 = 0x02 | 0x04 | 0x08 | 0x40 | 0x80;
-
-        let mut set_print_info_command = [
-            0x1b,
-            0x69,
-            0x7a,
-            FLAGS,
-            status.media_type as u8,
-            status.media_width,
-            status.media_length,
-            0,
-            0,
-            0,
-            0,
-            1,
-            0,
-        ];
-
-        set_print_info_command[7..11].copy_from_slice(&line_count.to_le_bytes());
-
-        self.printer.write(&set_print_info_command)
-    }
-
-    pub fn set_margin_amount(&mut self, margin: u16) -> Result<(), std::io::Error> {
-        let mut set_margin_amount_command = [0x1b, 0x69, 0x64, 0x00, 0x00];
-
-        set_margin_amount_command[3..5].copy_from_slice(&margin.to_le_bytes());
-
-        self.printer.write(&set_margin_amount_command)
-    }
-
-    pub fn raster_line(&mut self, line: &[u8; 90]) -> Result<(), std::io::Error> {
-        const LINE_LENGTH: u8 = 90;
-
-        let mut command = vec![0x67, 0x00, LINE_LENGTH];
-        command.extend_from_slice(line);
-
-        assert!(line.len() == LINE_LENGTH as usize);
-
-        self.printer.write(&command)
-    }
-    pub fn print(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x0c])
-    }
-
-    pub fn print_last_page(&mut self) -> Result<(), std::io::Error> {
-        self.printer.write(&[0x1A])
     }
 }
