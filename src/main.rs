@@ -83,6 +83,22 @@ async fn extract_photo_from_message(
         }
     }
 
+    if let Some(document) = message.document() {
+        // if document.mime_type == Some("image/jpeg".to_string()) {
+        //     return 
+        // } else {
+        //     bot.send_message(
+        //         message.chat.id,
+        //         "Can't print documents that are not images",
+        //     )
+        //     .await?;
+        // }
+
+        // skip checks
+
+        return Ok(Some((document.file.id.clone(), "png".to_string())));
+    }
+
     Ok(None)
 }
 
@@ -115,7 +131,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     // Limit stickers ratio (so people don't print incredibly long stickers)
 
-    let ratio = img.width() as f32 / img.height() as f32;
+    let ratio = img.height() as f32 / img.width() as f32 ;
 
     if ratio > 1.5 {
         println!("Ratio is too high: {}", ratio);
@@ -136,7 +152,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     // resize
 
-    let new_width = 720;
+    let new_width = 720; //630 per la carta piccola
 
     let new_height = new_width * img.height() / img.width();
 
