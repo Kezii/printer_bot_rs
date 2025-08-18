@@ -240,7 +240,10 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     printer.send_command(PrinterCommand::SetMode(PrinterMode { auto_cut: true }))?;
 
-    //printer.set_margin_amount(35)?;
+    // this is needed for the auto cut
+    printer.send_command(PrinterCommand::SetPageNumber(1))?;
+
+    printer.send_command(PrinterCommand::SetMarginAmount(0))?;
 
     debug!("printing {} lines", lines.len());
 
