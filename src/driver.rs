@@ -133,14 +133,14 @@ pub enum PrinterCommandMode {
 
 pub struct PrinterMode {
     /// Auto cut (QL550/560/570/580N/650TD/700/1050/1060N)
-    auto_cut: bool,
+    pub auto_cut: bool,
 }
 
 pub struct PrinterExpandedMode {
     /// Cut at end (Earlier version of QL-650TD firmware is not supported.)
-    cut_at_end: bool,
+    pub cut_at_end: bool,
     /// High resolution printing (QL-570/580N/700)
-    high_resolution_printing: bool,
+    pub high_resolution_printing: bool,
 }
 
 pub enum PrinterCommand {

@@ -10,7 +10,7 @@ use teloxide_core::{
     requests::{Requester, RequesterExt},
 };
 
-use crate::driver::{PrinterCommand, PrinterCommandMode};
+use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, PrinterMode};
 
 mod driver;
 mod error;
@@ -132,6 +132,9 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     let img = ImageReader::open(file_path)?.decode()?;
 
+    // 600 dpi mode for newer printers
+    let dpi_600 = false;
+
     // Limit stickers ratio (so people don't print incredibly long stickers)
 
     let ratio = img.height() as f32 / img.width() as f32;
@@ -157,7 +160,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     let new_width = 720; //630 per la carta piccola
 
-    let new_height = new_width * img.height() / img.width();
+    let new_height = new_width * img.height() / img.width() * if dpi_600 { 2 } else { 1 };
 
     let mut img = image::imageops::resize(
         &img,
@@ -229,6 +232,13 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
         status,
         lines.len() as i32,
     ))?;
+
+    printer.send_command(PrinterCommand::SetExpandedMode(PrinterExpandedMode {
+        cut_at_end: true,
+        high_resolution_printing: dpi_600,
+    }))?;
+
+    printer.send_command(PrinterCommand::SetMode(PrinterMode { auto_cut: true }))?;
 
     //printer.set_margin_amount(35)?;
 
