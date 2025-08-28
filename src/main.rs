@@ -1,4 +1,7 @@
+#![feature(test)]
+
 use std::env;
+use std::time::Instant;
 
 use error::PrinterBotError;
 use log::*;
@@ -13,6 +16,10 @@ use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, Pri
 
 mod driver;
 mod error;
+
+struct Settings {
+    dpi_600: bool,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), PrinterBotError> {
@@ -35,6 +42,8 @@ async fn main() -> Result<(), PrinterBotError> {
 
     let mut offset: u32 = 0;
 
+    let settings = Settings { dpi_600: false };
+
     loop {
         let updates = bot.get_updates().offset(offset as i32).await;
 
@@ -51,7 +60,13 @@ async fn main() -> Result<(), PrinterBotError> {
                         if let Some((file_id, file_ext)) =
                             extract_photo_from_message(&bot, &message).await?
                         {
-                            do_print(&bot, &file_id, &file_ext).await?;
+                            let file_path = download_file(&bot, &file_id, &file_ext).await?;
+
+                            let lines = render_image(&file_path, &settings)?;
+
+                            if let Err(err) = print_lines(lines, &settings) {
+                                error!("print failed, {:?}", err);
+                            }
                         }
                     }
                 }
@@ -86,53 +101,46 @@ async fn extract_photo_from_message(
     }
 
     if let Some(document) = message.document() {
-        // if document.mime_type == Some("image/jpeg".to_string()) {
-        //     return
-        // } else {
-        //     bot.send_message(
-        //         message.chat.id,
-        //         "Can't print documents that are not images",
-        //     )
-        //     .await?;
-        // }
+        if let Some(mime_type) = &document.mime_type {
+            let extension = match mime_type.as_ref() {
+                "image/jpeg" => "jpg",
+                "image/png" => "png",
+                "image/gif" => "gif",
+                "image/webp" => "webp",
+                "image/tiff" => "tiff",
+                "image/bmp" => "bmp",
+                _ => {
+                    bot.send_message(message.chat.id, "Can't print documents that are not images")
+                        .await?;
+                    return Ok(None);
+                }
+            };
 
-        // skip checks
+            return Ok(Some((document.file.id.to_string(), extension.to_string())));
+        }
 
-        return Ok(Some((document.file.id.to_string(), "png".to_string())));
+        return Ok(None);
     }
 
     Ok(None)
 }
 
-async fn do_print(
+async fn download_file(
     bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
     file_id: &str,
     file_ext: &str,
-) -> Result<(), PrinterBotError> {
+) -> Result<String, PrinterBotError> {
     let file = bot.get_file(FileId::from(file_id.to_string())).await?;
-
     let file_path = format!("/tmp/toprint.{file_ext}");
-
     let mut dst = tokio::fs::File::create(&file_path).await?;
-
     bot.download_file(&file.path, &mut dst).await?;
-
-    if let Err(err) = print_file(&file_path) {
-        error!("print failed, {:?}", err);
-    }
-
-    Ok(())
+    Ok(file_path)
 }
 
-fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
-    debug!("printing file: {}", file_path);
-
+fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]>, PrinterBotError> {
     use image::ImageReader;
 
     let img = ImageReader::open(file_path)?.decode()?;
-
-    // 600 dpi mode for newer printers
-    let dpi_600 = false;
 
     // Limit stickers ratio (so people don't print incredibly long stickers)
 
@@ -140,7 +148,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     if ratio > 1.5 {
         println!("Ratio is too high: {}", ratio);
-        return Ok(());
+        return Err(PrinterBotError::InvalidImage);
     }
 
     // remove transparency
@@ -159,7 +167,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     let new_width = 720; //630 per la carta piccola
 
-    let new_height = new_width * img.height() / img.width() * if dpi_600 { 2 } else { 1 };
+    let new_height = new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
 
     let mut img = image::imageops::resize(
         &img,
@@ -190,7 +198,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     let indexed_data = remapper.remap(&image, img.width() as usize);
 
-    //debug_print_dithered(&indexed_data, img.width(), img.height())?;
+    debug_print_dithered(&indexed_data, img.width(), img.height())?;
 
     // convert to vec of line bits
 
@@ -214,6 +222,10 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
         lines.push(line);
     }
 
+    Ok(lines)
+}
+
+fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterBotError> {
     let mut printer = driver::PrinterCommander::main("/dev/usb/lp0")?;
 
     printer.send_command(PrinterCommand::Reset)?;
@@ -234,7 +246,7 @@ fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
 
     printer.send_command(PrinterCommand::SetExpandedMode(PrinterExpandedMode {
         cut_at_end: true,
-        high_resolution_printing: dpi_600,
+        high_resolution_printing: settings.dpi_600,
     }))?;
 
     printer.send_command(PrinterCommand::SetMode(PrinterMode { auto_cut: true }))?;

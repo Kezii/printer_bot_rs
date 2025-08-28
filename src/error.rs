@@ -10,4 +10,6 @@ pub enum PrinterBotError {
     Download(#[from] teloxide_core::DownloadError),
     #[error("image error")]
     Image(#[from] image::ImageError),
+    #[error("invalid image")]
+    InvalidImage,
 }
