@@ -1,5 +1,4 @@
 use std::env;
-use std::os::linux::raw::stat;
 
 use error::PrinterBotError;
 use log::*;
@@ -128,7 +127,7 @@ async fn do_print(
 fn print_file(file_path: &str) -> Result<(), PrinterBotError> {
     debug!("printing file: {}", file_path);
 
-    use image::io::Reader as ImageReader;
+    use image::ImageReader;
 
     let img = ImageReader::open(file_path)?.decode()?;
 
