@@ -4,7 +4,7 @@ use std::os::linux::raw::stat;
 use error::PrinterBotError;
 use log::*;
 use teloxide_core::net::Download;
-use teloxide_core::types::ChatId;
+use teloxide_core::types::{ChatId, FileId};
 use teloxide_core::{
     payloads::GetUpdatesSetters,
     requests::{Requester, RequesterExt},
@@ -34,15 +34,15 @@ async fn main() -> Result<(), PrinterBotError> {
 
     info!("Started polling");
 
-    let mut offset: i32 = 0;
+    let mut offset: u32 = 0;
 
     loop {
-        let updates = bot.get_updates().offset(offset).await;
+        let updates = bot.get_updates().offset(offset as i32).await;
 
         match updates {
             Ok(updates) => {
                 for update in updates {
-                    offset = update.id + 1;
+                    offset = update.id.0 + 1;
 
                     if let teloxide_core::types::UpdateKind::Message(message) = update.kind {
                         if message.chat.id != owner_id {
@@ -73,13 +73,13 @@ async fn extract_photo_from_message(
         let biggest = photo.iter().max_by_key(|x| x.width);
 
         if let Some(biggest) = biggest {
-            return Ok(Some((biggest.file.id.clone(), "jpg".to_string())));
+            return Ok(Some((biggest.file.id.to_string(), "jpg".to_string())));
         }
     }
 
     if let Some(sticker) = message.sticker() {
-        if sticker.is_raster() {
-            return Ok(Some((sticker.file.id.clone(), "webp".to_string())));
+        if sticker.is_static() {
+            return Ok(Some((sticker.file.id.to_string(), "webp".to_string())));
         } else {
             bot.send_message(message.chat.id, "Can't print animated stickers")
                 .await?;
@@ -99,7 +99,7 @@ async fn extract_photo_from_message(
 
         // skip checks
 
-        return Ok(Some((document.file.id.clone(), "png".to_string())));
+        return Ok(Some((document.file.id.to_string(), "png".to_string())));
     }
 
     Ok(None)
@@ -110,7 +110,7 @@ async fn do_print(
     file_id: &str,
     file_ext: &str,
 ) -> Result<(), PrinterBotError> {
-    let file = bot.get_file(file_id).await?;
+    let file = bot.get_file(FileId::from(file_id.to_string())).await?;
 
     let file_path = format!("/tmp/toprint.{file_ext}");
 
