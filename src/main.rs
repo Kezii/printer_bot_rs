@@ -1,7 +1,4 @@
-#![feature(test)]
-
 use std::env;
-use std::time::Instant;
 
 use error::PrinterBotError;
 use log::*;
