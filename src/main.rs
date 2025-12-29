@@ -3,8 +3,10 @@ use std::env;
 use error::PrinterBotError;
 use image::{ImageBuffer, Luma, Rgba};
 use log::*;
+use teloxide_core::adaptors::DefaultParseMode;
 use teloxide_core::net::Download;
-use teloxide_core::types::{ChatId, FileId};
+use teloxide_core::types::{ChatId, FileId, Message};
+use teloxide_core::Bot;
 use teloxide_core::{
     payloads::GetUpdatesSetters,
     requests::{Requester, RequesterExt},
@@ -63,19 +65,17 @@ async fn main() -> Result<(), PrinterBotError> {
 
                     if let teloxide_core::types::UpdateKind::Message(message) = update.kind {
                         if message.chat.id != owner_id {
-                            continue;
+                            //continue;
                         }
 
-                        if let Some((file_id, file_ext)) =
-                            extract_photo_from_message(&bot, &message).await?
-                        {
-                            let file_path = download_file(&bot, &file_id, &file_ext).await?;
+                        bot.forward_message(owner_id, message.chat.id, message.id)
+                            .await
+                            .ok();
 
-                            let lines = render_image(&file_path, &settings)?;
+                        let res = print_picture(&bot, &message, &settings).await;
 
-                            if let Err(err) = print_lines(lines, &settings) {
-                                error!("print failed, {:?}", err);
-                            }
+                        if res.is_err() {
+                            bot.send_message(message.chat.id, format!("Error {:?}", res));
                         }
                     }
                 }
@@ -86,6 +86,24 @@ async fn main() -> Result<(), PrinterBotError> {
             }
         }
     }
+}
+
+async fn print_picture(
+    bot: &DefaultParseMode<Bot>,
+    message: &Message,
+    settings: &Settings,
+) -> Result<(), PrinterBotError> {
+    if let Some((file_id, file_ext)) = extract_photo_from_message(&bot, &message).await? {
+        let file_path = download_file(&bot, &file_id, &file_ext).await?;
+
+        let lines = render_image(&file_path, settings)?;
+
+        if let Err(err) = print_lines(lines, settings) {
+            error!("print failed, {:?}", err);
+        }
+    }
+
+    Ok(())
 }
 
 async fn extract_photo_from_message(
@@ -150,7 +168,7 @@ fn apply_dithering(
     mut input_img: ImageBuffer<Luma<u8>, Vec<u8>>,
 ) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, PrinterBotError> {
     // match the brightness of the previous implementation
-    let gamma_correction = 5.14;
+    let gamma_correction = 3.14;
 
     input_img
         .pixels_mut()
