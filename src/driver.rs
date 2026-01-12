@@ -4,7 +4,7 @@ use std::{
 };
 
 pub struct Printer {
-    fd: std::fs::File,
+    fd: File,
 }
 
 impl Printer {
