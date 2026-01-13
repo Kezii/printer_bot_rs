@@ -1,3 +1,3 @@
 [workspace]
-members = ["brother_ql", "printer_bot_rs"]
+members = ["brother_ql", "brother_ql_cli", "printer_bot_rs"]
 resolver = "2"
