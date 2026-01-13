@@ -1,12 +1,12 @@
 use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, PrinterMode};
-use crate::error::PrinterBotError;
+use crate::error::BrotherQlError;
 use crate::{driver, Settings};
 use image::{ImageBuffer, Luma, Rgba};
 use log::{debug, trace};
 
 fn apply_dithering(
     mut input_img: ImageBuffer<Luma<u8>, Vec<u8>>,
-) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, PrinterBotError> {
+) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, BrotherQlError> {
     // match the brightness of the previous implementation
     let gamma_correction = 3.14;
 
@@ -40,7 +40,7 @@ fn apply_dithering(
 
 fn apply_threshold(
     mut img: ImageBuffer<Luma<u8>, Vec<u8>>,
-) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, PrinterBotError> {
+) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, BrotherQlError> {
     img.pixels_mut().for_each(|x| {
         if x.0[0] > 128 {
             x.0[0] = 255;
@@ -58,7 +58,7 @@ fn apply_threshold(
     Ok(img)
 }
 
-fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, PrinterBotError> {
+fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, BrotherQlError> {
     // convert to vec of line bits
     /*
         let mut lines = Vec::new();
@@ -105,10 +105,7 @@ fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, Pr
     Ok(lines)
 }
 
-pub fn render_image(
-    file_path: &str,
-    settings: &Settings,
-) -> Result<Vec<[u8; 90]>, PrinterBotError> {
+pub fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]>, BrotherQlError> {
     use image::ImageReader;
 
     let img = ImageReader::open(file_path)?.decode()?;
@@ -119,7 +116,7 @@ pub fn render_image(
 
     if ratio > 3.5 {
         println!("Ratio is too high: {}", ratio);
-        return Err(PrinterBotError::InvalidImage);
+        return Err(BrotherQlError::InvalidImage);
     }
 
     // remove transparency
@@ -159,7 +156,7 @@ pub fn render_image(
     Ok(lines)
 }
 
-pub fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterBotError> {
+pub fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), BrotherQlError> {
     let mut printer = driver::PrinterCommander::main("/dev/usb/lp0")?;
 
     printer.send_command(PrinterCommand::Reset)?;

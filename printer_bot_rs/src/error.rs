@@ -1,3 +1,4 @@
+use brother_ql::error::BrotherQlError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -8,8 +9,6 @@ pub enum PrinterBotError {
     Teloxide(#[from] teloxide_core::RequestError),
     #[error("file download error")]
     Download(#[from] teloxide_core::DownloadError),
-    #[error("image error")]
-    Image(#[from] image::ImageError),
-    #[error("invalid image")]
-    InvalidImage,
+    #[error("brother ql printer error")]
+    PrinterError(#[from] BrotherQlError),
 }

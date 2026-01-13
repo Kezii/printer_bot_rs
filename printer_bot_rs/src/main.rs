@@ -1,9 +1,9 @@
 use std::env;
 
+use crate::error::PrinterBotError;
+use brother_ql::image::{print_lines, render_image};
+use brother_ql::Settings;
 use log::*;
-use printer_bot_rs::error::PrinterBotError;
-use printer_bot_rs::image::{print_lines, render_image};
-use printer_bot_rs::Settings;
 use teloxide_core::adaptors::DefaultParseMode;
 use teloxide_core::net::Download;
 use teloxide_core::types::{ChatId, FileId, Message};
@@ -12,6 +12,8 @@ use teloxide_core::{
     payloads::GetUpdatesSetters,
     requests::{Requester, RequesterExt},
 };
+
+mod error;
 
 #[tokio::main]
 async fn main() -> Result<(), PrinterBotError> {
