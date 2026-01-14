@@ -119,6 +119,49 @@ pub struct PrinterStatus {
     phase_state: PhaseState,
 }
 
+impl PrinterStatus {
+    /// Get the pixel width (print area width in dots) for the loaded media
+    pub fn pixel_width(&self) -> Option<u16> {
+        match (self.media_width, self.media_length) {
+            // Endless tapes (length = 0)
+            (12, 0) => Some(106),
+            (18, 0) => Some(234),
+            (29, 0) => Some(306),
+            (38, 0) => Some(413),
+            (50, 0) => Some(554),
+            (54, 0) => Some(590),
+            (62, 0) => Some(696),
+            (102, 0) => Some(1164),
+            (104, 0) => Some(1200),
+
+            // Die-cut labels
+            (17, 54) => Some(165),
+            (17, 87) => Some(165),
+            (23, 23) => Some(202),
+            (29, 42) => Some(306),
+            (29, 90) => Some(306),
+            (38, 90) => Some(413),
+            (39, 48) => Some(425),
+            (52, 29) => Some(578),
+            (54, 29) => Some(598),
+            (60, 87) => Some(672),
+            (62, 29) => Some(696),
+            (62, 100) => Some(696),
+            (102, 51) => Some(1164),
+            (102, 153) => Some(1164),
+            (104, 164) => Some(1200),
+
+            // Round die-cut labels
+            (12, 12) => Some(94),
+            (24, 24) => Some(236),
+            (58, 58) => Some(618),
+
+            // Unknown media
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum PrinterCommandMode {
     /// ESC/P mode (normal)

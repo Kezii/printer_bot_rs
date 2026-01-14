@@ -60,7 +60,10 @@ fn apply_threshold(
     Ok(img)
 }
 
-fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, BrotherQlError> {
+fn img_to_lines(
+    img: ImageBuffer<Rgba<u8>, Vec<u8>>,
+    image_width: u32,
+) -> Result<Vec<[u8; 90]>, BrotherQlError> {
     // convert to vec of line bits
     /*
         let mut lines = Vec::new();
@@ -85,16 +88,14 @@ fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, Br
     */
 
     let mut lines = Vec::new();
-
-    let new_width: u32 = env::var("WIDTH").unwrap_or("720".to_string()).parse::<u32>().unwrap_or(720);
-    let padding: u32 = 720 - new_width; 
+    let padding = 720 - image_width;
 
     for y in 0..img.height() {
         let mut line = [0u8; 90];
 
         for x in 0..img.width() {
             let i = img.get_pixel(x, y).0[0];
-            let x = x + padding; 
+            let x = x + padding;
             let byte = x / 8;
             let bit = x % 8;
 
@@ -139,8 +140,9 @@ pub fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]
     // resize
 
     // let new_width = 720; //630 per la carta piccola
-    let new_width: u32 = env::var("WIDTH").unwrap_or("5000".to_string()).parse::<u32>().unwrap_or(5000); //630 per la carta piccola
-
+    let mut printer = driver::PrinterCommander::main("/dev/usb/lp0")?;
+    let status = printer.read_status()?;
+    let new_width = status.pixel_width().unwrap_or(720) as u32;
     let new_height = new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
 
     let mut img = image::imageops::resize(
@@ -158,7 +160,8 @@ pub fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]
 
     dithered_img.save("/tmp/out_processed.png")?;
 
-    let lines = img_to_lines(dithered_img)?;
+    // if the paper format is not known, assume the biggest one
+    let lines = img_to_lines(dithered_img, new_width)?;
     Ok(lines)
 }
 
