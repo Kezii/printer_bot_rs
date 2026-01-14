@@ -1,3 +1,5 @@
+use std::env;
+
 use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, PrinterMode};
 use crate::error::BrotherQlError;
 use crate::{driver, Settings};
@@ -84,12 +86,15 @@ fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, Br
 
     let mut lines = Vec::new();
 
+    let new_width: u32 = env::var("WIDTH").unwrap_or("720".to_string()).parse::<u32>().unwrap_or(720);
+    let padding: u32 = 720 - new_width; 
+
     for y in 0..img.height() {
         let mut line = [0u8; 90];
 
         for x in 0..img.width() {
             let i = img.get_pixel(x, y).0[0];
-
+            let x = x + padding; 
             let byte = x / 8;
             let bit = x % 8;
 
@@ -133,7 +138,8 @@ pub fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]
 
     // resize
 
-    let new_width = 720; //630 per la carta piccola
+    // let new_width = 720; //630 per la carta piccola
+    let new_width: u32 = env::var("WIDTH").unwrap_or("5000".to_string()).parse::<u32>().unwrap_or(5000); //630 per la carta piccola
 
     let new_height = new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
 
