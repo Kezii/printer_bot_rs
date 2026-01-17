@@ -119,6 +119,50 @@ pub struct PrinterStatus {
     phase_state: PhaseState,
 }
 
+impl PrinterStatus {
+    /// Get the pixel width (print area width in dots) for the loaded media
+    pub fn pixel_width(&self) -> Option<u16> {
+        match (self.media_width, self.media_length) {
+            // Endless tapes (length = 0) - dots_total - offset_r
+            (12, 0) => Some(142 - 29),   // 113
+            (18, 0) => Some(256 - 171),  // 85
+            (29, 0) => Some(342 - 6),    // 336
+            (38, 0) => Some(449 - 12),   // 437
+            (50, 0) => Some(590 - 12),   // 578
+            (54, 0) => Some(636 - 0),    // 636
+            (62, 0) => Some(732 - 12),   // 720
+            (102, 0) => Some(1200 - 12), // 1188
+            (104, 0) => Some(1224 - 12), // 1212
+
+            // Die-cut labels
+            (17, 54) => Some(201 - 0),     // 201
+            (17, 87) => Some(201 - 0),     // 201
+            (23, 23) => Some(272 - 42),    // 230
+            (29, 42) => Some(342 - 6),     // 336
+            (29, 90) => Some(342 - 6),     // 336
+            (38, 90) => Some(449 - 12),    // 437
+            (39, 48) => Some(461 - 6),     // 455
+            (52, 29) => Some(614 - 0),     // 614
+            (54, 29) => Some(630 - 60),    // 570
+            (60, 87) => Some(708 - 18),    // 690
+            (62, 29) => Some(732 - 12),    // 720
+            (62, 100) => Some(732 - 12),   // 720
+            (102, 51) => Some(1200 - 12),  // 1188
+            (102, 153) => Some(1200 - 12), // 1188
+            (104, 164) => Some(1224 - 12), // 1212
+
+            // Round die-cut labels
+            // This can't be right
+            //(12, 12) => Some(142 - 113), // 29
+            (24, 24) => Some(284 - 42),  // 242
+            (58, 58) => Some(688 - 51),  // 637
+
+            // Unknown media
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum PrinterCommandMode {
     /// ESC/P mode (normal)
