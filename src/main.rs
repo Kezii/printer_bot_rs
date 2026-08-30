@@ -1,14 +1,23 @@
+use std::collections::HashMap;
 use std::env;
+use std::io::Cursor;
+use std::time::Instant;
 
 use error::PrinterBotError;
-use image::{ImageBuffer, Luma, Rgba};
+use image::{DynamicImage, ImageBuffer, ImageReader, Luma, Rgba};
 use log::*;
 use teloxide_core::net::Download;
-use teloxide_core::types::{ChatId, FileId};
+use teloxide_core::payloads::{SendMessageSetters, SendPhotoSetters};
+use teloxide_core::types::{
+    ChatId, FileId, InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup,
+    InputFile, ReplyMarkup, ReplyParameters,
+};
 use teloxide_core::{
     payloads::GetUpdatesSetters,
     requests::{Requester, RequesterExt},
 };
+use tokio::io::split;
+use uuid::Uuid;
 
 use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, PrinterMode};
 
@@ -20,6 +29,8 @@ struct Settings {
     dpi_600: bool,
     auto_cut: bool,
     dithering: bool,
+    public_access: bool,
+    owner: ChatId,
 }
 
 #[tokio::main]
@@ -28,30 +39,33 @@ async fn main() -> Result<(), PrinterBotError> {
     env_logger::init();
 
     let token = env::var("BOT_TOKEN").expect("BOT_TOKEN is not set");
-    let owner_id: ChatId = ChatId(
-        env::var("OWNER_ID")
-            .expect("OWNER_ID is not set")
-            .parse()
-            .expect("invalid OWNER_ID"),
-    );
 
     let bot = teloxide_core::Bot::new(token).parse_mode(teloxide_core::types::ParseMode::Html);
 
-    bot.send_message(owner_id, "sto partendo").await?;
+    let settings = Settings {
+        dpi_600: true,
+        auto_cut: true,
+        dithering: true,
+        public_access: true,
+        owner: ChatId(
+            env::var("OWNER_ID")
+                .expect("OWNER_ID is not set")
+                .parse()
+                .expect("invalid OWNER_ID"),
+        ),
+    };
+
+    bot.send_message(settings.owner, "sto partendo").await?;
 
     info!("Started polling");
 
     let mut offset: u32 = 0;
 
-    let settings = Settings {
-        dpi_600: false,
-        auto_cut: true,
-        dithering: true,
-    };
-
-    info!("Settings: {:?}", settings);
-    bot.send_message(owner_id, format!("Settings: {:?}", settings))
+    info!("Settings: {:#?}", settings);
+    bot.send_message(settings.owner, format!("Settings: {:#?}", settings))
         .await?;
+
+    let mut image_database: HashMap<u128, FinalImage> = HashMap::new();
 
     loop {
         let updates = bot.get_updates().offset(offset as i32).await;
@@ -62,30 +76,106 @@ async fn main() -> Result<(), PrinterBotError> {
                     offset = update.id.0 + 1;
 
                     if let teloxide_core::types::UpdateKind::Message(message) = update.kind {
-                        if message.chat.id != owner_id {
+                        if message.chat.id != settings.owner && !settings.public_access {
+                            info!("unauthorized access from {:?}", message.from);
                             continue;
                         }
 
                         if let Some((file_id, file_ext)) =
                             extract_photo_from_message(&bot, &message).await?
                         {
-                            let file_path = download_file(&bot, &file_id, &file_ext).await?;
+                            let id = Uuid::new_v4();
 
-                            let lines = render_image(&file_path, &settings)?;
+                            let raw_image = download_file(&bot, &file_id, &file_ext).await?;
 
-                            if let Err(err) = print_lines(lines, &settings) {
-                                error!("print failed, {:?}", err);
+                            let final_image = render_image(raw_image, &settings, id)?;
+
+                            image_database.insert(id.as_u128(), final_image.clone());
+
+                            send_preview(&bot, &message, final_image.clone()).await?;
+                        } else {
+                            bot.send_message(message.chat.id, "You should send an image")
+                                .reply_parameters(ReplyParameters::new(message.id))
+                                .await?;
+                        }
+                    } else if let teloxide_core::types::UpdateKind::CallbackQuery(query) =
+                        update.kind
+                    {
+                        info!("{:?}", query);
+
+                        if let Some(data) = query.data {
+                            let c = data.split("_").collect::<Vec<&str>>();
+
+                            if c.len() == 2 && c.get(0) == Some(&"print") {
+                                if let Some(s) = c.get(1) {
+                                    if let Ok(id) = s.to_owned().parse::<u128>() {
+                                        if let Some(image) = image_database.remove(&id) {
+                                            if let Err(err) = print_lines(image.lines, &settings) {
+                                                error!("print failed, {:?}", err);
+
+                                                if let Some(message) = query.message {
+                                                    bot.send_message(
+                                                        message.chat().id,
+                                                        "Print failed",
+                                                    )
+                                                    .reply_parameters(ReplyParameters::new(
+                                                        message.id(),
+                                                    ))
+                                                    .await?;
+                                                }
+                                            }
+                                        } else {
+                                            if let Some(message) = query.message {
+                                                bot.send_message(
+                                                    message.chat().id,
+                                                    "Image invalid, please send again",
+                                                )
+                                                .reply_parameters(ReplyParameters::new(
+                                                    message.id(),
+                                                ))
+                                                .await?;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
+                    } else {
+                        info!("Received non-message update {:?}", update);
                     }
                 }
             }
             Err(err) => {
                 error!("{:?}", err);
-                bot.send_message(owner_id, format!("{:#?}", err)).await.ok();
+                bot.send_message(settings.owner, format!("{:#?}", err))
+                    .await
+                    .ok();
             }
         }
+
+        image_database.retain(|_, v| v.creation_date.elapsed().as_secs() < 60 * 30);
     }
+}
+
+pub async fn send_preview(
+    bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
+    message: &teloxide_core::types::Message,
+    final_image: FinalImage,
+) -> Result<(), PrinterBotError> {
+    let preview_keyboard = ReplyMarkup::InlineKeyboard(InlineKeyboardMarkup::new([[
+        InlineKeyboardButton::callback("Print", format!("print_{}", final_image.id.as_u128())),
+    ]]));
+
+    let mut buffer: Vec<u8> = Vec::new();
+    final_image
+        .preview
+        .write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Png)?;
+
+    bot.send_photo(message.chat.id, InputFile::memory(buffer))
+        .reply_markup(preview_keyboard)
+        .await?;
+
+    Ok(())
 }
 
 async fn extract_photo_from_message(
@@ -138,12 +228,14 @@ async fn download_file(
     bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
     file_id: &str,
     file_ext: &str,
-) -> Result<String, PrinterBotError> {
+) -> Result<DynamicImage, PrinterBotError> {
     let file = bot.get_file(FileId::from(file_id.to_string())).await?;
     let file_path = format!("/tmp/toprint.{file_ext}");
     let mut dst = tokio::fs::File::create(&file_path).await?;
     bot.download_file(&file.path, &mut dst).await?;
-    Ok(file_path)
+    let img = ImageReader::open(file_path)?.decode()?;
+
+    Ok(img)
 }
 
 fn apply_dithering(
@@ -246,12 +338,19 @@ fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, Pr
 
     Ok(lines)
 }
+#[derive(Clone)]
+pub struct FinalImage {
+    pub id: Uuid,
+    pub creation_date: std::time::Instant,
+    pub preview: DynamicImage,
+    pub lines: Vec<[u8; 90]>, // lines
+}
 
-fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]>, PrinterBotError> {
-    use image::ImageReader;
-
-    let img = ImageReader::open(file_path)?.decode()?;
-
+fn render_image(
+    img: DynamicImage,
+    settings: &Settings,
+    id: Uuid,
+) -> Result<FinalImage, PrinterBotError> {
     // Limit stickers ratio (so people don't print incredibly long stickers)
 
     let ratio = img.height() as f32 / img.width() as f32;
@@ -279,7 +378,7 @@ fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]>, P
 
     let new_height = new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
 
-    let mut img = image::imageops::resize(
+    let img = image::imageops::resize(
         &img,
         new_width,
         new_height,
@@ -292,10 +391,28 @@ fn render_image(file_path: &str, settings: &Settings) -> Result<Vec<[u8; 90]>, P
         apply_threshold(img)?
     };
 
-    dithered_img.save("/tmp/out_processed.png")?;
+    let preview = dithered_img.clone();
+
+    let preview = if settings.dpi_600 {
+        let image = DynamicImage::from(preview);
+        let image = image.resize_exact(
+            image.width() * 2,
+            image.height(),
+            image::imageops::FilterType::Nearest,
+        );
+        image
+    } else {
+        DynamicImage::from(preview)
+    };
 
     let lines = img_to_lines(dithered_img)?;
-    Ok(lines)
+
+    Ok(FinalImage {
+        preview,
+        lines,
+        id,
+        creation_date: Instant::now(),
+    })
 }
 
 fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterBotError> {
