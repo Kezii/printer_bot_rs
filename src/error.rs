@@ -12,4 +12,8 @@ pub enum PrinterBotError {
     Image(#[from] image::ImageError),
     #[error("invalid image")]
     InvalidImage,
+    #[error("serdes error")]
+    SerdesError(#[from] postcard::Error),
+    #[error("base64 error")]
+    Base64Error(#[from] base64::DecodeError),
 }

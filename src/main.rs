@@ -3,14 +3,17 @@ use std::env;
 use std::io::Cursor;
 use std::time::Instant;
 
+use base64::prelude::*;
 use error::PrinterBotError;
 use image::{DynamicImage, ImageBuffer, ImageReader, Luma, Rgba};
 use log::*;
+use postcard::{from_bytes, to_vec};
+use serde::{Deserialize, Serialize};
 use teloxide_core::net::Download;
 use teloxide_core::payloads::{SendMessageSetters, SendPhotoSetters};
 use teloxide_core::types::{
     ChatId, FileId, InlineKeyboardButton, InlineKeyboardButtonKind, InlineKeyboardMarkup,
-    InputFile, ReplyMarkup, ReplyParameters,
+    InputFile, Message, MessageId, ReplyMarkup, ReplyParameters,
 };
 use teloxide_core::{
     payloads::GetUpdatesSetters,
@@ -20,9 +23,11 @@ use tokio::io::split;
 use uuid::Uuid;
 
 use crate::driver::{PrinterCommand, PrinterCommandMode, PrinterExpandedMode, PrinterMode};
+use crate::telegram::{download_file, extract_photo_from_message};
 
 mod driver;
 mod error;
+mod telegram;
 
 #[derive(Debug)]
 struct Settings {
@@ -31,6 +36,29 @@ struct Settings {
     dithering: bool,
     public_access: bool,
     owner: ChatId,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+enum CallbackCommand {
+    Print(u128),
+    Rotate(u128),
+    Split(u128),
+    Delete(u128),
+}
+
+impl CallbackCommand {
+    pub fn string(&self) -> Result<String, PrinterBotError> {
+        let bytes = postcard::to_allocvec(self)?;
+        Ok(BASE64_URL_SAFE.encode(bytes))
+    }
+
+    pub fn from_string(s: &str) -> Result<CallbackCommand, PrinterBotError> {
+        let bytes = BASE64_URL_SAFE.decode(s)?;
+
+        let t = postcard::from_bytes(&bytes)?;
+
+        Ok(t)
+    }
 }
 
 #[tokio::main]
@@ -65,7 +93,7 @@ async fn main() -> Result<(), PrinterBotError> {
     bot.send_message(settings.owner, format!("Settings: {:#?}", settings))
         .await?;
 
-    let mut image_database: HashMap<u128, FinalImage> = HashMap::new();
+    let mut image_database: HashMap<u128, PipelinedImage> = HashMap::new();
 
     loop {
         let updates = bot.get_updates().offset(offset as i32).await;
@@ -84,15 +112,13 @@ async fn main() -> Result<(), PrinterBotError> {
                         if let Some((file_id, file_ext)) =
                             extract_photo_from_message(&bot, &message).await?
                         {
-                            let id = Uuid::new_v4();
-
                             let raw_image = download_file(&bot, &file_id, &file_ext).await?;
 
-                            let final_image = render_image(raw_image, &settings, id)?;
+                            let mut pipelined = PipelinedImage::new(raw_image, message.chat.id);
 
-                            image_database.insert(id.as_u128(), final_image.clone());
+                            pipelined.send_preview(&bot, &settings).await?;
 
-                            send_preview(&bot, &message, final_image.clone()).await?;
+                            image_database.insert(pipelined.id.as_u128(), pipelined.clone());
                         } else {
                             bot.send_message(message.chat.id, "You should send an image")
                                 .reply_parameters(ReplyParameters::new(message.id))
@@ -103,20 +129,33 @@ async fn main() -> Result<(), PrinterBotError> {
                     {
                         info!("{:?}", query);
 
-                        if let Some(data) = query.data {
-                            let c = data.split("_").collect::<Vec<&str>>();
+                        if let Some(data) = &query.data {
+                            if let Ok(command) = CallbackCommand::from_string(data) {
+                                match command {
+                                    CallbackCommand::Print(id) => {
+                                        if let Some(image) = image_database.get(&id) {
+                                            let render = image.render_image(&settings)?;
 
-                            if c.len() == 2 && c.get(0) == Some(&"print") {
-                                if let Some(s) = c.get(1) {
-                                    if let Ok(id) = s.to_owned().parse::<u128>() {
-                                        if let Some(image) = image_database.remove(&id) {
-                                            if let Err(err) = print_lines(image.lines, &settings) {
+                                            if render.1.len() > 2000 {
+                                                if let Some(message) = &query.message {
+                                                    bot.send_message(
+                                                        message.chat().id,
+                                                        "the image is too long, please rotate or resize",
+                                                    )
+                                                    .reply_parameters(ReplyParameters::new(
+                                                        message.id(),
+                                                    ))
+                                                    .await?;
+                                                }
+                                            } else if let Err(err) =
+                                                print_lines(&render.1, &settings)
+                                            {
                                                 error!("print failed, {:?}", err);
 
                                                 if let Some(message) = query.message {
                                                     bot.send_message(
                                                         message.chat().id,
-                                                        "Print failed",
+                                                        format!("print failed, {:?}", err),
                                                     )
                                                     .reply_parameters(ReplyParameters::new(
                                                         message.id(),
@@ -128,7 +167,7 @@ async fn main() -> Result<(), PrinterBotError> {
                                             if let Some(message) = query.message {
                                                 bot.send_message(
                                                     message.chat().id,
-                                                    "Image invalid, please send again",
+                                                    "Image expired, please send again",
                                                 )
                                                 .reply_parameters(ReplyParameters::new(
                                                     message.id(),
@@ -137,6 +176,21 @@ async fn main() -> Result<(), PrinterBotError> {
                                             }
                                         }
                                     }
+
+                                    CallbackCommand::Rotate(id) => {
+                                        if let Some(pip) = image_database.get_mut(&id) {
+                                            pip.modifiers.rot += 90;
+                                            pip.send_preview(&bot, &settings).await?;
+                                        }
+                                    }
+
+                                    CallbackCommand::Delete(id) => {
+                                        if let Some(mut i) = image_database.remove(&id) {
+                                            i.delete_preview(&bot).await;
+                                        }
+                                    }
+
+                                    CallbackCommand::Split(id) => {}
                                 }
                             }
                         }
@@ -155,87 +209,6 @@ async fn main() -> Result<(), PrinterBotError> {
 
         image_database.retain(|_, v| v.creation_date.elapsed().as_secs() < 60 * 30);
     }
-}
-
-pub async fn send_preview(
-    bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
-    message: &teloxide_core::types::Message,
-    final_image: FinalImage,
-) -> Result<(), PrinterBotError> {
-    let preview_keyboard = ReplyMarkup::InlineKeyboard(InlineKeyboardMarkup::new([[
-        InlineKeyboardButton::callback("Print", format!("print_{}", final_image.id.as_u128())),
-    ]]));
-
-    let mut buffer: Vec<u8> = Vec::new();
-    final_image
-        .preview
-        .write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Png)?;
-
-    bot.send_photo(message.chat.id, InputFile::memory(buffer))
-        .reply_markup(preview_keyboard)
-        .await?;
-
-    Ok(())
-}
-
-async fn extract_photo_from_message(
-    bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
-    message: &teloxide_core::types::Message,
-) -> Result<Option<(String, String)>, PrinterBotError> {
-    if let Some(photo) = message.photo() {
-        let biggest = photo.iter().max_by_key(|x| x.width);
-
-        if let Some(biggest) = biggest {
-            return Ok(Some((biggest.file.id.to_string(), "jpg".to_string())));
-        }
-    }
-
-    if let Some(sticker) = message.sticker() {
-        if sticker.is_static() {
-            return Ok(Some((sticker.file.id.to_string(), "webp".to_string())));
-        } else {
-            bot.send_message(message.chat.id, "Can't print animated stickers")
-                .await?;
-        }
-    }
-
-    if let Some(document) = message.document() {
-        if let Some(mime_type) = &document.mime_type {
-            let extension = match mime_type.as_ref() {
-                "image/jpeg" => "jpg",
-                "image/png" => "png",
-                "image/gif" => "gif",
-                "image/webp" => "webp",
-                "image/tiff" => "tiff",
-                "image/bmp" => "bmp",
-                _ => {
-                    bot.send_message(message.chat.id, "Can't print documents that are not images")
-                        .await?;
-                    return Ok(None);
-                }
-            };
-
-            return Ok(Some((document.file.id.to_string(), extension.to_string())));
-        }
-
-        return Ok(None);
-    }
-
-    Ok(None)
-}
-
-async fn download_file(
-    bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
-    file_id: &str,
-    file_ext: &str,
-) -> Result<DynamicImage, PrinterBotError> {
-    let file = bot.get_file(FileId::from(file_id.to_string())).await?;
-    let file_path = format!("/tmp/toprint.{file_ext}");
-    let mut dst = tokio::fs::File::create(&file_path).await?;
-    bot.download_file(&file.path, &mut dst).await?;
-    let img = ImageReader::open(file_path)?.decode()?;
-
-    Ok(img)
 }
 
 fn apply_dithering(
@@ -338,84 +311,158 @@ fn img_to_lines(img: ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<Vec<[u8; 90]>, Pr
 
     Ok(lines)
 }
+
 #[derive(Clone)]
-pub struct FinalImage {
+pub struct Modifiers {
+    pub rot: i16,
+    pub split: bool,
+}
+
+#[derive(Clone)]
+pub struct PipelinedImage {
     pub id: Uuid,
     pub creation_date: std::time::Instant,
-    pub preview: DynamicImage,
-    pub lines: Vec<[u8; 90]>, // lines
+    pub raw_image: DynamicImage,
+    pub modifiers: Modifiers,
+    pub chat_id: ChatId,
+    pub old_preview_id: Option<MessageId>,
 }
 
-fn render_image(
-    img: DynamicImage,
-    settings: &Settings,
-    id: Uuid,
-) -> Result<FinalImage, PrinterBotError> {
-    // Limit stickers ratio (so people don't print incredibly long stickers)
-
-    let ratio = img.height() as f32 / img.width() as f32;
-
-    if ratio > 3.5 {
-        println!("Ratio is too high: {}", ratio);
-        return Err(PrinterBotError::InvalidImage);
+impl PipelinedImage {
+    pub fn new(raw: DynamicImage, chat_id: ChatId) -> Self {
+        Self {
+            raw_image: raw,
+            id: Uuid::new_v4(),
+            creation_date: Instant::now(),
+            chat_id,
+            old_preview_id: None,
+            modifiers: Modifiers {
+                rot: 0,
+                split: false,
+            },
+        }
     }
 
-    // remove transparency
-    let img = img.into_rgba8();
+    pub fn render_image(
+        &self,
+        settings: &Settings,
+    ) -> Result<(DynamicImage, Vec<[u8; 90]>), PrinterBotError> {
+        // Limit stickers ratio (so people don't print incredibly long stickers)
 
-    let background_color = image::Rgba([255, 255, 255, 255]);
-    let mut background_image =
-        image::ImageBuffer::from_pixel(img.width(), img.height(), background_color);
-    image::imageops::overlay(&mut background_image, &img, 0, 0);
+        let image = self.raw_image.clone();
 
-    // convert to grayscale
+        let image = match self.modifiers.rot % 360 {
+            90 => image.rotate90(),
+            180 => image.rotate180(),
+            270 => image.rotate270(),
+            _ => image,
+        };
 
-    let img = image::imageops::grayscale(&background_image);
+        // remove transparency
+        let img = image.clone().into_rgba8();
 
-    // resize
+        let background_color = image::Rgba([255, 255, 255, 255]);
+        let mut background_image =
+            image::ImageBuffer::from_pixel(img.width(), img.height(), background_color);
+        image::imageops::overlay(&mut background_image, &img, 0, 0);
 
-    let new_width = 720; //630 per la carta piccola
+        // convert to grayscale
 
-    let new_height = new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
+        let img = image::imageops::grayscale(&background_image);
 
-    let img = image::imageops::resize(
-        &img,
-        new_width,
-        new_height,
-        image::imageops::FilterType::Lanczos3,
-    );
+        // resize
 
-    let dithered_img = if settings.dithering {
-        apply_dithering(img)?
-    } else {
-        apply_threshold(img)?
-    };
+        let new_width = 720; //630 per la carta piccola
 
-    let preview = dithered_img.clone();
+        let new_height =
+            new_width * img.height() / img.width() * if settings.dpi_600 { 2 } else { 1 };
 
-    let preview = if settings.dpi_600 {
-        let image = DynamicImage::from(preview);
-        let image = image.resize_exact(
-            image.width() * 2,
-            image.height(),
-            image::imageops::FilterType::Nearest,
+        let img = image::imageops::resize(
+            &img,
+            new_width,
+            new_height,
+            image::imageops::FilterType::Lanczos3,
         );
-        image
-    } else {
-        DynamicImage::from(preview)
-    };
 
-    let lines = img_to_lines(dithered_img)?;
+        let dithered_img = if settings.dithering {
+            apply_dithering(img)?
+        } else {
+            apply_threshold(img)?
+        };
 
-    Ok(FinalImage {
-        preview,
-        lines,
-        id,
-        creation_date: Instant::now(),
-    })
+        let preview = dithered_img.clone();
+        let lines = img_to_lines(dithered_img)?;
+
+        let preview = if settings.dpi_600 {
+            let image = DynamicImage::from(preview);
+            let image = image.resize_exact(
+                image.width() * 2,
+                image.height(),
+                image::imageops::FilterType::Nearest,
+            );
+            image
+        } else {
+            DynamicImage::from(preview)
+        };
+
+        Ok((preview, lines))
+    }
+
+    pub async fn send_preview(
+        &mut self,
+        bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
+        settings: &Settings,
+    ) -> Result<(), PrinterBotError> {
+        let render = self.render_image(settings)?;
+
+        let preview = render.0;
+
+        let preview = preview.resize(1000, 1000, image::imageops::FilterType::Lanczos3);
+
+        let preview_keyboard = ReplyMarkup::InlineKeyboard(InlineKeyboardMarkup::new([
+            vec![InlineKeyboardButton::callback(
+                "Print",
+                CallbackCommand::Print(self.id.as_u128()).string()?,
+            )],
+            vec![
+                InlineKeyboardButton::callback(
+                    "Rotate",
+                    CallbackCommand::Rotate(self.id.as_u128()).string()?,
+                ),
+                InlineKeyboardButton::callback(
+                    "Delete",
+                    CallbackCommand::Delete(self.id.as_u128()).string()?,
+                ),
+            ],
+        ]));
+
+        let mut buffer: Vec<u8> = Vec::new();
+
+        preview.write_to(&mut Cursor::new(&mut buffer), image::ImageFormat::Png)?;
+
+        self.delete_preview(bot).await;
+
+        let preview = bot
+            .send_photo(self.chat_id, InputFile::memory(buffer))
+            .reply_markup(preview_keyboard)
+            .await?;
+
+        self.old_preview_id = Some(preview.id);
+
+        Ok(())
+    }
+
+    pub async fn delete_preview(
+        &mut self,
+        bot: &teloxide_core::adaptors::DefaultParseMode<teloxide_core::Bot>,
+    ) {
+        if let Some(old) = self.old_preview_id.take() {
+            bot.delete_message(self.chat_id, old).await.ok();
+        }
+    }
 }
 
-fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterBotError> {
+fn print_lines(lines: &Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterBotError> {
     let mut printer = driver::PrinterCommander::main("/dev/usb/lp0")?;
 
     printer.send_command(PrinterCommand::Reset)?;
@@ -451,7 +498,7 @@ fn print_lines(lines: Vec<[u8; 90]>, settings: &Settings) -> Result<(), PrinterB
     debug!("printing {} lines", lines.len());
 
     for line in lines {
-        printer.send_command(PrinterCommand::RasterGraphicsTransfer(line))?;
+        printer.send_command(PrinterCommand::RasterGraphicsTransfer(line.clone()))?;
     }
 
     printer.send_command(PrinterCommand::PrintWithFeeding)?;
